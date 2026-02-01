@@ -1,0 +1,24 @@
+#,Category,Part,Description,Quantity,Unit Price EUR,Total EUR,Supplier,Part Number,Link,Notes
+1,SDR,ADALM-PLUTO,SDR 325MHz-3.8GHz 2T2R Rev C,1,230,230,DigiKey,ADALM-PLUTO,https://www.digikey.com/en/products/detail/analog-devices-inc/ADALM-PLUTO/6624230,Firmware hack for VHF
+2,PA,RA30H1317M,30W VHF PA Module 135-175MHz,1,75,75,eBay,RA30H1317M,https://www.ebay.com/sch/i.html?_nkw=RA30H1317M,Requires heatsink
+3,LNA,SPF5189Z,LNA Board NF 0.6dB 50-4000MHz,1,12,12,AliExpress,SPF5189Z,https://www.aliexpress.com/wholesale?SearchText=SPF5189Z,Sirotinjski Rydberg
+4,RF,Bias Tee,DC-6GHz SMA Bias Tee,1,8,8,AliExpress,Bias-Tee-SMA,https://www.aliexpress.com/wholesale?SearchText=bias+tee+sma,For LNA power
+5,RF,Attenuator 10dB,2W SMA 10dB Attenuator,1,6,6,AliExpress,SMA-ATT-10dB,https://www.aliexpress.com/wholesale?SearchText=10db+attenuator+sma,Between Pluto and PA
+6,Cable,SMA Cable 30cm,SMA Male-Male RG316,4,4,16,AliExpress,SMA-RG316-30,https://www.aliexpress.com/wholesale?SearchText=sma+rg316+30cm,Low loss
+7,Connector,SMA Bulkhead,SMA Female Panel Mount,4,2,8,AliExpress,SMA-Bulkhead,https://www.aliexpress.com/wholesale?SearchText=sma+bulkhead+female,For enclosure
+8,Connector,N-SMA Adapter,N Female to SMA Male,2,5,10,AliExpress,N-SMA-Adapter,https://www.aliexpress.com/wholesale?SearchText=n+female+sma+male,For antenna
+9,Cable,RG316 5m,RG316 Coax 5 meters,1,12,12,AliExpress,RG316-5M,https://www.aliexpress.com/wholesale?SearchText=rg316+5m,For antenna feed
+10,Antenna,Alu Tube 10mm,Aluminium Tube 10mm x 3m,2,7.5,15,Bauhaus,ALU-10-3000,Local store,Cut to size for Yagi
+11,Antenna,PVC Boom 32mm,PVC Pipe 32mm x 2m,1,8,8,Bauhaus,PVC-32-2000,Local store,Antenna boom
+12,Antenna,U-Bolts M6,M6 U-Bolts for element mount,10,0.5,5,Bauhaus,U-BOLT-M6,Local store,Mount elements
+13,Antenna,SO-239,SO-239 Chassis Mount,2,3,6,Chipoteka,SO-239-CHASSIS,Local electronics,Antenna connector
+14,Power,PSU 13.8V 10A,Switching PSU 13.8V 10A,1,28,28,Amazon,PSU-13V8-10A,https://www.amazon.com/s?k=13.8v+10a+power+supply,For PA
+15,Thermal,Heatsink,100x69x36mm Aluminum,1,12,12,AliExpress,HS-100x69x36,https://www.aliexpress.com/wholesale?SearchText=100x69x36+heatsink,For PA module
+16,Thermal,Fan 80mm,12V 80mm PC Fan,1,5,5,PC Surplus,FAN-80-12V,Local/eBay,For cooling
+17,Thermal,Thermal Paste,Arctic MX-4 4g,1,6,6,Amazon,MX-4,https://www.amazon.com/s?k=arctic+mx-4,PA to heatsink
+18,Enclosure,Project Box,IP65 Plastic 200x150x100,1,15,15,AliExpress,IP65-BOX-200,https://www.aliexpress.com/wholesale?SearchText=ip65+project+box,Weatherproof
+19,Misc,Terminal Blocks,2-4 position screw,5,1,5,Chipoteka,TB-2POS,Local electronics,Power distribution
+20,Misc,Wire 18AWG,Silicone Wire 18AWG 5m,1,5,5,AliExpress,WIRE-18AWG,https://www.aliexpress.com/wholesale?SearchText=18awg+silicone+wire,Power wiring
+21,Misc,Solder Kit,Solder + Flux + Wick,1,8,8,Chipoteka,SOLDER-KIT,Local electronics,Assembly
+,,,,,,,,,
+,TOTAL,,,,,495,,,Budget Target: <€500
