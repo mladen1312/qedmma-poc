@@ -1,0 +1,35 @@
+Item,Part Number,Description,Quantity,Unit Price EUR,Total EUR,Supplier,Order Link,Notes
+1,RFSoC 4x2,AMD Zynq UltraScale+ RFSoC Development Board,1,2000,2000,AMD University Program,https://www.amd.com/en/corporate/university-program,Requires academic affiliation
+2,RA60H1317M-101,60W VHF Power Amplifier 134-174MHz,1,85,85,Mouser,https://www.mouser.com/ProductDetail/Mitsubishi-Electric/RA60H1317M-101,PA module
+3,SPF5189Z,Low Noise Amplifier Module 50-4000MHz NF 0.6dB,4,12,48,AliExpress,https://www.aliexpress.com/wholesale?SearchText=spf5189z,LNA for RX channels
+4,SBP-150+,Bandpass Filter 127-173 MHz,2,35,70,Mini-Circuits,https://www.minicircuits.com/WebStore/Filters.html,VHF bandpass filter
+5,ZFBT-4R2GW+,Bias Tee 10-4200MHz 500mA,4,8,32,AliExpress,https://www.aliexpress.com/wholesale?SearchText=bias+tee+sma,For LNA power injection
+6,SMA-M-M-30CM,SMA Male-Male Cable RG316 30cm,8,5,40,Pasternack,https://www.pasternack.com/rf-coaxial-cables-category.aspx,Internal RF connections
+7,SMA-M-M-1M,SMA Male-Male Cable RG58 1m,4,8,32,Pasternack,https://www.pasternack.com/rf-coaxial-cables-category.aspx,External connections
+8,SMA-N-ADAPTER,SMA Male to N Female Adapter,6,5,30,Various,https://www.aliexpress.com/wholesale?SearchText=sma+n+adapter,Antenna adapters
+9,YAGI-VHF-155-TX,VHF Yagi Antenna 155MHz 3-element 6dBd,1,45,45,Wimo,https://www.wimo.com/en/antennas,TX antenna
+10,YAGI-VHF-155-RX,VHF Yagi Antenna 155MHz 3-element 6dBd,4,45,180,Wimo,https://www.wimo.com/en/antennas,RX array elements
+11,ANT-MOUNT,Antenna Mounting Hardware,1,50,50,Local,N/A,Brackets and mast
+12,LMR-400-10M,LMR-400 Coaxial Cable 10m with N connectors,5,15,75,Wimo,https://www.wimo.com/en/cables,Antenna feedlines
+13,LRS-200-12,Mean Well 12V 17A Power Supply,1,45,45,Mouser,https://www.mouser.com/c/power/ac-dc-converters/,Main PSU
+14,LRS-100-24,Mean Well 24V 4.5A Power Supply,1,35,35,Mouser,https://www.mouser.com/c/power/ac-dc-converters/,PA PSU
+15,FUSE-HOLDER,Panel Mount Fuse Holder 5x20mm,3,2,6,Various,https://www.aliexpress.com/wholesale?SearchText=fuse+holder,Protection
+16,FUSE-SET,Fuse Set 5A 10A 15A (10 pcs),1,5,5,Various,N/A,Spares
+17,DC-CONN,Anderson PowerPole Connectors,5,2,10,Various,https://powerwerx.com/anderson-powerpole,Power distribution
+18,HEATSINK-100,Aluminum Heatsink 100x100x35mm,1,15,15,Mouser,https://www.mouser.com/c/thermal-management/heat-sinks/,PA cooling
+19,FAN-80MM,Noctua NF-A8 80mm Fan 12V,2,8,16,Noctua,https://noctua.at/en/products/fan,Enclosure cooling
+20,THERMAL-PASTE,Arctic MX-4 Thermal Paste,1,8,8,Amazon,https://www.amazon.com/,Thermal interface
+21,ENCLOSURE,Aluminum RF Enclosure 300x200x100mm,1,80,80,Hammond,https://www.hammfg.com/electronics/small-case,System housing
+22,SD-CARD-64GB,SanDisk Extreme 64GB microSD A2,1,15,15,Amazon,https://www.amazon.com/,PYNQ boot media
+23,ETH-CABLE-CAT6,Cat6 Ethernet Cable 2m,2,5,10,Various,N/A,Network connection
+24,USB-CABLES,USB Cable Set (A B C),1,10,10,Various,N/A,Debug and control
+25,MOUNTING-HW,Screws Standoffs Nuts Kit,1,15,15,Various,N/A,Assembly hardware
+,,,,,,,,
+,TOTAL,,,2947,,,System Total: EUR 2947,
+,,,,,,,,
+,NOTES:,,,,,,,
+,1. RFSoC 4x2 requires AMD University Program membership,,,,,,,
+,2. Allow 2-4 weeks for RFSoC 4x2 delivery,,,,,,,
+,3. AliExpress items may take 2-3 weeks to arrive,,,,,,,
+,4. Prices as of February 2026 - may vary,,,,,,,
+,5. Alternative PA: RA30H1317M (30W) for EUR 45,,,,,,,
