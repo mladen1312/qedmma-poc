@@ -1,889 +1,891 @@
 #!/usr/bin/env python3
 """
-TITAN VHF Anti-Stealth Radar - Tactical Display System
-Real-Time PPI Display, Range-Doppler Map & Multi-Target Tracking
+TITAN VHF Anti-Stealth Radar - Advanced Tactical Display
+Real-Time PPI + Range-Doppler Visualization
 
 Author: Dr. Mladen Mešter
 Copyright (c) 2026 - All Rights Reserved
 
-Based on SVETOVID UI architecture, enhanced for TITAN RFSoC 4x2 platform.
-
-Features:
-- Plan Position Indicator (PPI) with range rings
-- Range-Doppler Map (waterfall/intensity)
-- Multi-target tracking with trail history
-- Real-time detection list
-- System status panel
+Based on Gemini Factory Spec UI template, extended for:
+- Multi-target tracking with track history
+- Range-Doppler map visualization
+- Doppler filter bank display
+- Real-time detection overlay
 - Google Earth KML export
-- Configurable themes (Classic Green, Modern Blue, Night Red)
+- Threat classification display
 
 Requirements:
     pip install PyQt5 pyqtgraph numpy scipy
 
 Usage:
-    python titan_tactical_display.py                    # Simulation mode
-    python titan_tactical_display.py --hardware         # With RFSoC hardware
-    python titan_tactical_display.py --theme modern     # Blue theme
+    python3 titan_tactical_display.py                    # Simulation mode
+    python3 titan_tactical_display.py --mode hardware   # Real hardware
+    python3 titan_tactical_display.py --kml output.kml  # Enable KML export
 """
 
 import sys
 import os
 import numpy as np
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass, field
 from enum import Enum
-import json
 import time
+import json
 
 # PyQt5 imports
 from PyQt5.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QLabel, QPushButton, QComboBox, QGroupBox,
-    QTableWidget, QTableWidgetItem, QSplitter, QStatusBar,
-    QFileDialog, QMessageBox, QCheckBox, QSpinBox, QDoubleSpinBox,
-    QTabWidget, QFrame, QProgressBar
+    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
+    QWidget, QLabel, QGridLayout, QGroupBox, QTabWidget,
+    QPushButton, QComboBox, QSpinBox, QDoubleSpinBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QSplitter,
+    QStatusBar, QProgressBar, QCheckBox
 )
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QThread
 from PyQt5.QtGui import QFont, QColor, QPalette
 
-# PyQtGraph for high-performance plotting
+# PyQtGraph for fast plotting
 import pyqtgraph as pg
 from pyqtgraph import ColorMap
 
+# Configure PyQtGraph for radar theme
+pg.setConfigOption('background', (0, 0, 0))        # Black background
+pg.setConfigOption('foreground', (0, 255, 0))      # Green foreground
+pg.setConfigOptions(antialias=True)
+
 
 #===============================================================================
-# Constants & Configuration
+# Constants
 #===============================================================================
 
 C = 299792458.0  # Speed of light (m/s)
+RADAR_GREEN = (0, 255, 0)
+RADAR_AMBER = (255, 191, 0)
+RADAR_RED = (255, 0, 0)
+RADAR_CYAN = (0, 255, 255)
 
 
-class Theme(Enum):
-    """Display themes"""
-    CLASSIC = "classic"    # Green on black (traditional radar)
-    MODERN = "modern"      # Blue tones
-    NIGHT = "night"        # Red for night vision
-    HIGH_CONTRAST = "high_contrast"
+#===============================================================================
+# Data Models
+#===============================================================================
 
-
-THEMES = {
-    Theme.CLASSIC: {
-        'background': '#000000',
-        'foreground': '#00FF00',
-        'grid': '#004400',
-        'target': '#FF0000',
-        'track': '#00FF00',
-        'ring': '#00AA00',
-        'text': '#00FF00',
-        'alert': '#FFFF00',
-    },
-    Theme.MODERN: {
-        'background': '#0a1628',
-        'foreground': '#00BFFF',
-        'grid': '#1a3a5c',
-        'target': '#FF6B6B',
-        'track': '#4ECDC4',
-        'ring': '#2980B9',
-        'text': '#E0E0E0',
-        'alert': '#FFD93D',
-    },
-    Theme.NIGHT: {
-        'background': '#1a0000',
-        'foreground': '#FF4444',
-        'grid': '#330000',
-        'target': '#FFFF00',
-        'track': '#FF6666',
-        'ring': '#660000',
-        'text': '#FF8888',
-        'alert': '#FFFFFF',
-    },
-    Theme.HIGH_CONTRAST: {
-        'background': '#000000',
-        'foreground': '#FFFFFF',
-        'grid': '#333333',
-        'target': '#FF0000',
-        'track': '#00FF00',
-        'ring': '#666666',
-        'text': '#FFFFFF',
-        'alert': '#FFFF00',
-    },
-}
+class ThreatLevel(Enum):
+    """Target threat classification"""
+    UNKNOWN = "UNKNOWN"
+    FRIENDLY = "FRIENDLY"
+    NEUTRAL = "NEUTRAL"
+    HOSTILE = "HOSTILE"
+    STEALTH = "STEALTH"
 
 
 @dataclass
-class TargetTrack:
-    """Single target track"""
+class Track:
+    """Single radar track (target)"""
     track_id: int
+    range_m: float
+    azimuth_deg: float
+    velocity_mps: float
+    rcs_m2: float
+    snr_db: float
+    threat: ThreatLevel = ThreatLevel.UNKNOWN
+    
+    # Cartesian position
     x: float = 0.0
     y: float = 0.0
-    range_m: float = 0.0
-    azimuth_deg: float = 0.0
-    velocity_mps: float = 0.0
-    heading_deg: float = 0.0
-    snr_db: float = 0.0
-    rcs_m2: float = 0.0
-    classification: str = "UNKNOWN"
-    threat_level: str = "LOW"
+    
+    # Track history
     history_x: List[float] = field(default_factory=list)
     history_y: List[float] = field(default_factory=list)
-    last_update: float = 0.0
+    history_time: List[float] = field(default_factory=list)
+    
+    # Track quality
     age_seconds: float = 0.0
+    updates: int = 0
+    coasted: bool = False
     
-    def update_position(self, x: float, y: float, max_history: int = 50):
-        """Update track position and history"""
-        self.x = x
-        self.y = y
-        self.range_m = np.sqrt(x**2 + y**2)
-        self.azimuth_deg = np.degrees(np.arctan2(y, x)) % 360
+    def __post_init__(self):
+        # Convert polar to Cartesian
+        self.x = self.range_m * np.cos(np.radians(self.azimuth_deg))
+        self.y = self.range_m * np.sin(np.radians(self.azimuth_deg))
+    
+    def update(self, range_m: float, azimuth_deg: float, velocity_mps: float, 
+               snr_db: float, timestamp: float):
+        """Update track with new measurement"""
+        self.range_m = range_m
+        self.azimuth_deg = azimuth_deg
+        self.velocity_mps = velocity_mps
+        self.snr_db = snr_db
         
-        self.history_x.append(x)
-        self.history_y.append(y)
+        # Update Cartesian
+        self.x = range_m * np.cos(np.radians(azimuth_deg))
+        self.y = range_m * np.sin(np.radians(azimuth_deg))
         
+        # Add to history
+        self.history_x.append(self.x)
+        self.history_y.append(self.y)
+        self.history_time.append(timestamp)
+        
+        # Limit history length
+        max_history = 100
         if len(self.history_x) > max_history:
-            self.history_x.pop(0)
-            self.history_y.pop(0)
+            self.history_x = self.history_x[-max_history:]
+            self.history_y = self.history_y[-max_history:]
+            self.history_time = self.history_time[-max_history:]
         
-        self.last_update = time.time()
-
-
-@dataclass
-class RadarConfig:
-    """Radar display configuration"""
-    max_range_m: float = 150000  # 150 km
-    range_rings: List[float] = field(default_factory=lambda: [25000, 50000, 75000, 100000, 125000, 150000])
-    azimuth_lines: int = 12  # Every 30°
-    update_rate_hz: float = 20.0
-    trail_length: int = 50
-    doppler_bins: int = 256
-    range_bins: int = 512
-    theme: Theme = Theme.CLASSIC
-
-
-#===============================================================================
-# Range-Doppler Map Widget
-#===============================================================================
-
-class RangeDopplerWidget(pg.PlotWidget):
-    """Real-time Range-Doppler intensity map"""
+        self.updates += 1
+        self.coasted = False
     
-    def __init__(self, config: RadarConfig, parent=None):
-        super().__init__(parent)
-        self.config = config
-        
-        self.setTitle("RANGE-DOPPLER MAP")
-        self.setLabel('left', 'Doppler Bin')
-        self.setLabel('bottom', 'Range (km)')
-        
-        # Create image item for intensity display
-        self.img = pg.ImageItem()
-        self.addItem(self.img)
-        
-        # Color map (radar intensity)
-        colors = [
-            (0, 0, 0),
-            (0, 0, 128),
-            (0, 128, 0),
-            (128, 128, 0),
-            (255, 0, 0),
-            (255, 255, 255)
-        ]
-        cmap = ColorMap(pos=np.linspace(0.0, 1.0, len(colors)), color=colors)
-        self.img.setLookupTable(cmap.getLookupTable())
-        
-        # Initialize empty data
-        self.rd_data = np.zeros((config.doppler_bins, config.range_bins))
-        self.update_display(self.rd_data)
+    @property
+    def speed_kmh(self) -> float:
+        return abs(self.velocity_mps) * 3.6
     
-    def update_display(self, rd_map: np.ndarray):
-        """Update Range-Doppler map display"""
-        # Convert to dB scale
-        rd_db = 20 * np.log10(np.abs(rd_map) + 1e-10)
-        
-        # Normalize to 0-255
-        rd_min = np.percentile(rd_db, 5)
-        rd_max = np.percentile(rd_db, 99)
-        rd_norm = np.clip((rd_db - rd_min) / (rd_max - rd_min + 1e-10), 0, 1)
-        
-        self.img.setImage(rd_norm.T, autoLevels=False)
-        
-        # Set axis scaling
-        self.img.setRect(0, 0, self.config.max_range_m/1000, self.config.doppler_bins)
+    @property
+    def mach_number(self) -> float:
+        return abs(self.velocity_mps) / 340.0
 
 
 #===============================================================================
-# PPI (Plan Position Indicator) Widget
+# Radar Simulation (for demo without hardware)
 #===============================================================================
 
-class PPIWidget(pg.PlotWidget):
-    """Traditional circular PPI radar display"""
+class RadarSimulator:
+    """Simulates radar targets for UI testing"""
     
-    def __init__(self, config: RadarConfig, theme_colors: dict, parent=None):
-        super().__init__(parent)
-        self.config = config
-        self.colors = theme_colors
+    def __init__(self, num_targets: int = 3):
+        self.num_targets = num_targets
+        self.targets = []
+        self.time = 0
         
-        self.setTitle("PPI TRACKING SCOPE")
+        # Initialize random targets
+        for i in range(num_targets):
+            target = {
+                'id': i + 1,
+                'range': np.random.uniform(20000, 80000),  # 20-80 km
+                'azimuth': np.random.uniform(0, 360),
+                'velocity': np.random.uniform(100, 400),   # 100-400 m/s
+                'rcs': np.random.choice([0.01, 0.1, 1, 5, 10, 50]),  # Various RCS
+                'orbit_rate': np.random.uniform(0.5, 2) * np.random.choice([-1, 1]),
+                'radial_osc': np.random.uniform(0, 0.3),
+            }
+            self.targets.append(target)
+    
+    def update(self, dt: float = 0.05) -> List[Dict]:
+        """Generate simulated radar detections"""
+        self.time += dt
+        detections = []
+        
+        for t in self.targets:
+            # Update target motion
+            t['azimuth'] += t['orbit_rate'] * dt
+            t['azimuth'] %= 360
+            
+            # Radial oscillation
+            range_var = 5000 * np.sin(self.time * t['radial_osc'])
+            
+            # Add noise
+            range_noise = np.random.normal(0, 100)
+            az_noise = np.random.normal(0, 0.5)
+            vel_noise = np.random.normal(0, 5)
+            
+            # Calculate SNR based on range and RCS
+            # SNR ∝ RCS / R^4
+            snr = 10 * np.log10(t['rcs']) - 40 * np.log10(t['range'] / 50000) + 30
+            snr += np.random.normal(0, 2)
+            
+            detection = {
+                'track_id': t['id'],
+                'range_m': t['range'] + range_var + range_noise,
+                'azimuth_deg': t['azimuth'] + az_noise,
+                'velocity_mps': t['velocity'] * np.cos(np.radians(t['azimuth'])) + vel_noise,
+                'rcs_m2': t['rcs'],
+                'snr_db': snr,
+                'timestamp': self.time,
+            }
+            detections.append(detection)
+        
+        return detections
+    
+    def generate_range_doppler_map(self, num_range: int = 512, 
+                                   num_doppler: int = 256) -> np.ndarray:
+        """Generate simulated Range-Doppler map"""
+        # Noise floor
+        rd_map = np.random.exponential(1, (num_doppler, num_range)) * 0.1
+        
+        # Add targets as peaks
+        for t in self.targets:
+            # Range bin
+            range_bin = int((t['range'] / 100000) * num_range)
+            range_bin = max(0, min(num_range - 1, range_bin))
+            
+            # Doppler bin (velocity to Doppler)
+            doppler = 2 * t['velocity'] * np.cos(np.radians(t['azimuth'])) / 1.93  # λ = 1.93m
+            doppler_bin = int((doppler + 500) / 1000 * num_doppler)
+            doppler_bin = max(0, min(num_doppler - 1, doppler_bin))
+            
+            # Add Gaussian peak
+            for dr in range(-5, 6):
+                for dd in range(-3, 4):
+                    r_idx = range_bin + dr
+                    d_idx = doppler_bin + dd
+                    if 0 <= r_idx < num_range and 0 <= d_idx < num_doppler:
+                        amplitude = t['rcs'] * np.exp(-(dr**2 / 4 + dd**2 / 2))
+                        rd_map[d_idx, r_idx] += amplitude
+        
+        return rd_map
+
+
+#===============================================================================
+# PPI Display Widget
+#===============================================================================
+
+class PPIDisplay(pg.PlotWidget):
+    """Plan Position Indicator (PPI) - Classic radar circular display"""
+    
+    def __init__(self, max_range_km: float = 100):
+        super().__init__()
+        
+        self.max_range_km = max_range_km
+        self.max_range_m = max_range_km * 1000
+        
+        # Configure plot
+        self.setTitle("PPI TACTICAL SCOPE", color='g', size='12pt')
         self.setAspectLocked(True)
-        
-        max_r = config.max_range_m / 1000  # km
-        self.setRange(xRange=[-max_r, max_r], yRange=[-max_r, max_r])
-        self.setLabel('left', 'North-South (km)')
-        self.setLabel('bottom', 'East-West (km)')
-        self.showGrid(x=True, y=True, alpha=0.3)
-        
-        # Draw range rings
-        self._draw_range_rings()
-        
-        # Draw azimuth lines
-        self._draw_azimuth_lines()
+        self.setRange(xRange=[-self.max_range_m, self.max_range_m],
+                     yRange=[-self.max_range_m, self.max_range_m])
+        self.showGrid(x=True, y=True, alpha=0.2)
+        self.setLabel('bottom', 'East-West', units='m')
+        self.setLabel('left', 'North-South', units='m')
         
         # Radar center marker
-        self.radar_center = self.plot(
-            [0], [0], 
-            symbol='+', 
-            symbolSize=20, 
-            symbolBrush=self.colors['target']
-        )
+        self.radar_center = self.plot([0], [0], symbol='+', symbolSize=25, 
+                                      symbolBrush='r', symbolPen='r')
         
-        # Target scatter plot
-        self.target_scatter = pg.ScatterPlotItem(
-            size=15, 
-            pen=pg.mkPen(None), 
-            brush=pg.mkBrush(self.colors['target'])
-        )
-        self.addItem(self.target_scatter)
+        # Range rings
+        self.draw_range_rings()
         
-        # Track trails (one per track)
-        self.track_plots = {}
+        # Azimuth lines
+        self.draw_azimuth_lines()
         
-        # Sweep line (rotating radar beam simulation)
+        # Track items
+        self.track_items = {}  # track_id -> trail plot
+        
+        # Detection scatter
+        self.detection_scatter = pg.ScatterPlotItem(size=12, pen=pg.mkPen(None))
+        self.addItem(self.detection_scatter)
+        
+        # Sweep line
         self.sweep_angle = 0
-        self.sweep_line = self.plot(
-            [0, 0], [0, 0],
-            pen=pg.mkPen(self.colors['foreground'], width=2)
-        )
+        self.sweep_line = self.plot([0, 0], [0, 0], pen=pg.mkPen('g', width=2))
     
-    def _draw_range_rings(self):
+    def draw_range_rings(self):
         """Draw concentric range rings"""
-        for r_m in self.config.range_rings:
-            r_km = r_m / 1000
-            
-            # Create circle
-            theta = np.linspace(0, 2*np.pi, 100)
-            x = r_km * np.cos(theta)
-            y = r_km * np.sin(theta)
-            
-            self.plot(x, y, pen=pg.mkPen(self.colors['ring'], width=1))
-            
-            # Range label
-            text = pg.TextItem(f"{int(r_km)} km", color=self.colors['text'])
-            text.setPos(r_km * 0.7, r_km * 0.7)
-            self.addItem(text)
-    
-    def _draw_azimuth_lines(self):
-        """Draw azimuth reference lines"""
-        max_r = self.config.max_range_m / 1000
+        ring_distances = [25, 50, 75, 100]  # km
         
-        for i in range(self.config.azimuth_lines):
-            angle = i * 360 / self.config.azimuth_lines
-            angle_rad = np.radians(angle)
+        for r_km in ring_distances:
+            if r_km <= self.max_range_km:
+                r_m = r_km * 1000
+                
+                # Draw circle using QGraphicsEllipseItem
+                circle = pg.QtWidgets.QGraphicsEllipseItem(-r_m, -r_m, r_m*2, r_m*2)
+                circle.setPen(pg.mkPen((0, 255, 0, 80), width=1))
+                self.addItem(circle)
+                
+                # Range label
+                text = pg.TextItem(f"{r_km} km", color=(0, 255, 0, 150))
+                text.setPos(r_m * 0.7, r_m * 0.7)
+                self.addItem(text)
+    
+    def draw_azimuth_lines(self):
+        """Draw azimuth reference lines every 30°"""
+        for az in range(0, 360, 30):
+            rad = np.radians(az)
+            x = [0, self.max_range_m * np.sin(rad)]
+            y = [0, self.max_range_m * np.cos(rad)]
             
-            x = [0, max_r * np.cos(angle_rad)]
-            y = [0, max_r * np.sin(angle_rad)]
+            self.plot(x, y, pen=pg.mkPen((0, 255, 0, 50), width=1))
             
-            self.plot(x, y, pen=pg.mkPen(self.colors['grid'], width=1, style=Qt.DashLine))
-            
-            # Cardinal direction labels
-            if angle == 0:
-                label = "E"
-            elif angle == 90:
+            # Cardinal labels
+            if az == 0:
                 label = "N"
-            elif angle == 180:
-                label = "W"
-            elif angle == 270:
+            elif az == 90:
+                label = "E"
+            elif az == 180:
                 label = "S"
+            elif az == 270:
+                label = "W"
             else:
-                label = f"{int(angle)}°"
+                label = f"{az}°"
             
-            text = pg.TextItem(label, color=self.colors['text'])
-            text.setPos(max_r * 1.05 * np.cos(angle_rad), max_r * 1.05 * np.sin(angle_rad))
+            text = pg.TextItem(label, color=(0, 255, 0, 100))
+            text.setPos(self.max_range_m * 0.95 * np.sin(rad),
+                       self.max_range_m * 0.95 * np.cos(rad))
             self.addItem(text)
     
     def update_sweep(self, angle_deg: float):
-        """Update rotating sweep line"""
-        max_r = self.config.max_range_m / 1000
-        angle_rad = np.radians(angle_deg)
-        
-        self.sweep_line.setData(
-            [0, max_r * np.cos(angle_rad)],
-            [0, max_r * np.sin(angle_rad)]
-        )
+        """Update radar sweep line"""
+        self.sweep_angle = angle_deg
+        rad = np.radians(angle_deg)
+        self.sweep_line.setData([0, self.max_range_m * np.sin(rad)],
+                                [0, self.max_range_m * np.cos(rad)])
     
-    def update_targets(self, tracks: Dict[int, TargetTrack]):
-        """Update target positions and trails"""
-        # Collect all current target positions
-        x_list = []
-        y_list = []
+    def update_tracks(self, tracks: List[Track]):
+        """Update all tracks on display"""
+        # Collect data for scatter plot
+        x_data = []
+        y_data = []
+        colors = []
         
-        for track_id, track in tracks.items():
-            x_km = track.x / 1000
-            y_km = track.y / 1000
-            x_list.append(x_km)
-            y_list.append(y_km)
+        for track in tracks:
+            x_data.append(track.x)
+            y_data.append(track.y)
             
-            # Update or create trail plot
-            if track_id not in self.track_plots:
-                self.track_plots[track_id] = self.plot(
-                    pen=pg.mkPen(self.colors['track'], width=2, style=Qt.DashLine)
-                )
+            # Color based on threat
+            if track.threat == ThreatLevel.HOSTILE:
+                colors.append(RADAR_RED)
+            elif track.threat == ThreatLevel.STEALTH:
+                colors.append(RADAR_AMBER)
+            elif track.threat == ThreatLevel.FRIENDLY:
+                colors.append(RADAR_CYAN)
+            else:
+                colors.append(RADAR_GREEN)
+            
+            # Update or create track trail
+            track_id = track.track_id
+            if track_id not in self.track_items:
+                # Create new trail
+                trail = self.plot(pen=pg.mkPen(RADAR_GREEN + (150,), width=2, style=Qt.DashLine))
+                self.track_items[track_id] = trail
             
             # Update trail
-            history_x_km = [x/1000 for x in track.history_x]
-            history_y_km = [y/1000 for y in track.history_y]
-            self.track_plots[track_id].setData(history_x_km, history_y_km)
+            if len(track.history_x) > 1:
+                self.track_items[track_id].setData(track.history_x, track.history_y)
         
-        # Update scatter plot with current positions
-        self.target_scatter.setData(x_list, y_list)
-        
-        # Remove stale track plots
-        stale_ids = set(self.track_plots.keys()) - set(tracks.keys())
-        for track_id in stale_ids:
-            self.removeItem(self.track_plots[track_id])
-            del self.track_plots[track_id]
+        # Update scatter
+        if x_data:
+            brushes = [pg.mkBrush(*c) for c in colors]
+            self.detection_scatter.setData(x_data, y_data, brush=brushes)
+        else:
+            self.detection_scatter.clear()
 
 
 #===============================================================================
-# Detection Table Widget
+# Range-Doppler Map Display
 #===============================================================================
 
-class DetectionTableWidget(QTableWidget):
-    """Table showing all current detections"""
+class RangeDopplerDisplay(pg.PlotWidget):
+    """Range-Doppler map visualization with CFAR overlay"""
     
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, num_range: int = 512, num_doppler: int = 256,
+                 max_range_km: float = 100, max_velocity_mps: float = 500):
+        super().__init__()
         
-        self.setColumnCount(9)
+        self.num_range = num_range
+        self.num_doppler = num_doppler
+        self.max_range_km = max_range_km
+        self.max_velocity_mps = max_velocity_mps
+        
+        # Configure plot
+        self.setTitle("RANGE-DOPPLER MAP", color='g', size='12pt')
+        self.setLabel('bottom', 'Range', units='km')
+        self.setLabel('left', 'Velocity', units='m/s')
+        
+        # Create image item for R-D map
+        self.img = pg.ImageItem()
+        self.addItem(self.img)
+        
+        # Create colormap (jet-like for radar)
+        colors = [
+            (0, 0, 0),       # Black
+            (0, 0, 128),     # Dark blue
+            (0, 128, 255),   # Light blue
+            (0, 255, 0),     # Green
+            (255, 255, 0),   # Yellow
+            (255, 128, 0),   # Orange
+            (255, 0, 0),     # Red
+            (255, 255, 255), # White
+        ]
+        cmap = pg.ColorMap(np.linspace(0, 1, len(colors)), 
+                          [pg.mkColor(*c) for c in colors])
+        self.img.setLookupTable(cmap.getLookupTable())
+        
+        # Set axes
+        self.img.setRect(0, -max_velocity_mps, max_range_km, 2 * max_velocity_mps)
+        
+        # Detection overlay
+        self.detection_scatter = pg.ScatterPlotItem(size=10, 
+                                                     pen=pg.mkPen('w', width=2),
+                                                     brush=pg.mkBrush(None))
+        self.addItem(self.detection_scatter)
+    
+    def update_map(self, rd_map: np.ndarray, detections: List[Tuple[float, float]] = None):
+        """Update Range-Doppler map display"""
+        # Convert to dB
+        rd_db = 10 * np.log10(rd_map + 1e-10)
+        rd_db = np.clip(rd_db, -10, 40)
+        
+        # Normalize
+        rd_norm = (rd_db + 10) / 50  # Map -10..40 dB to 0..1
+        
+        self.img.setImage(rd_norm.T)
+        
+        # Update detections overlay
+        if detections:
+            ranges = [d[0] / 1000 for d in detections]  # Convert to km
+            velocities = [d[1] for d in detections]
+            self.detection_scatter.setData(ranges, velocities)
+
+
+#===============================================================================
+# Track Table Widget
+#===============================================================================
+
+class TrackTable(QTableWidget):
+    """Table showing all active tracks"""
+    
+    def __init__(self):
+        super().__init__()
+        
+        # Configure table
+        self.setColumnCount(8)
         self.setHorizontalHeaderLabels([
-            "ID", "Range (km)", "Azimuth (°)", "Velocity (m/s)",
-            "SNR (dB)", "RCS (m²)", "Class", "Threat", "Age (s)"
+            'ID', 'Range (km)', 'Azimuth (°)', 'Velocity (m/s)', 
+            'RCS (m²)', 'SNR (dB)', 'Threat', 'Age (s)'
         ])
         
         # Style
+        self.setStyleSheet("""
+            QTableWidget {
+                background-color: #000000;
+                color: #00FF00;
+                gridline-color: #004400;
+                font-family: 'Courier New';
+            }
+            QHeaderView::section {
+                background-color: #002200;
+                color: #00FF00;
+                font-weight: bold;
+            }
+        """)
+        
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.setAlternatingRowColors(True)
-        self.setSelectionBehavior(QTableWidget.SelectRows)
-        self.horizontalHeader().setStretchLastSection(True)
     
-    def update_tracks(self, tracks: Dict[int, TargetTrack]):
+    def update_tracks(self, tracks: List[Track]):
         """Update table with current tracks"""
         self.setRowCount(len(tracks))
         
-        for row, (track_id, track) in enumerate(sorted(tracks.items())):
-            self.setItem(row, 0, QTableWidgetItem(f"T{track_id:03d}"))
-            self.setItem(row, 1, QTableWidgetItem(f"{track.range_m/1000:.1f}"))
-            self.setItem(row, 2, QTableWidgetItem(f"{track.azimuth_deg:.1f}"))
-            self.setItem(row, 3, QTableWidgetItem(f"{track.velocity_mps:.1f}"))
-            self.setItem(row, 4, QTableWidgetItem(f"{track.snr_db:.1f}"))
-            self.setItem(row, 5, QTableWidgetItem(f"{track.rcs_m2:.1f}"))
-            self.setItem(row, 6, QTableWidgetItem(track.classification))
-            self.setItem(row, 7, QTableWidgetItem(track.threat_level))
-            self.setItem(row, 8, QTableWidgetItem(f"{track.age_seconds:.1f}"))
+        for row, track in enumerate(tracks):
+            # ID
+            self.setItem(row, 0, QTableWidgetItem(f"T{track.track_id:03d}"))
             
-            # Color coding by threat level
-            if track.threat_level == "HIGH":
-                for col in range(9):
-                    self.item(row, col).setBackground(QColor(128, 0, 0))
-            elif track.threat_level == "MEDIUM":
-                for col in range(9):
-                    self.item(row, col).setBackground(QColor(128, 128, 0))
+            # Range
+            self.setItem(row, 1, QTableWidgetItem(f"{track.range_m/1000:.1f}"))
+            
+            # Azimuth
+            self.setItem(row, 2, QTableWidgetItem(f"{track.azimuth_deg:.1f}"))
+            
+            # Velocity
+            vel_item = QTableWidgetItem(f"{track.velocity_mps:.0f}")
+            if abs(track.velocity_mps) > 300:  # Supersonic
+                vel_item.setForeground(QColor(255, 191, 0))
+            self.setItem(row, 3, vel_item)
+            
+            # RCS
+            rcs_item = QTableWidgetItem(f"{track.rcs_m2:.2f}")
+            if track.rcs_m2 < 1.0:  # Low RCS = potential stealth
+                rcs_item.setForeground(QColor(255, 0, 0))
+            self.setItem(row, 4, rcs_item)
+            
+            # SNR
+            snr_item = QTableWidgetItem(f"{track.snr_db:.1f}")
+            if track.snr_db < 15:
+                snr_item.setForeground(QColor(255, 191, 0))
+            self.setItem(row, 5, snr_item)
+            
+            # Threat
+            threat_item = QTableWidgetItem(track.threat.value)
+            if track.threat == ThreatLevel.HOSTILE:
+                threat_item.setForeground(QColor(255, 0, 0))
+            elif track.threat == ThreatLevel.STEALTH:
+                threat_item.setForeground(QColor(255, 191, 0))
+            self.setItem(row, 6, threat_item)
+            
+            # Age
+            self.setItem(row, 7, QTableWidgetItem(f"{track.age_seconds:.1f}"))
 
 
 #===============================================================================
-# System Status Widget
+# System Status Panel
 #===============================================================================
 
-class SystemStatusWidget(QGroupBox):
-    """System status and health indicators"""
+class StatusPanel(QGroupBox):
+    """System status display panel"""
     
-    def __init__(self, parent=None):
-        super().__init__("SYSTEM STATUS", parent)
+    def __init__(self):
+        super().__init__("SYSTEM STATUS")
+        
+        self.setStyleSheet("""
+            QGroupBox {
+                color: #00FF00;
+                font-weight: bold;
+                border: 1px solid #004400;
+            }
+            QLabel {
+                color: #00FF00;
+                font-family: 'Courier New';
+            }
+        """)
         
         layout = QGridLayout()
-        self.setLayout(layout)
         
         # Status indicators
         self.labels = {}
         
         indicators = [
-            ("Mode", "SIMULATION"),
-            ("PRBS", "PRBS-15"),
-            ("TX Power", "0 W"),
-            ("RX Gain", "0 dB"),
-            ("Proc. Gain", "0 dB"),
-            ("Detections", "0"),
-            ("CPU Load", "0%"),
-            ("Temp", "0°C"),
+            ('MODE', 'SIMULATION'),
+            ('PRBS', 'PRBS-15'),
+            ('PROC GAIN', '45.2 dB'),
+            ('TX POWER', '60 W'),
+            ('FREQUENCY', '155 MHz'),
+            ('BANDWIDTH', '100 MHz'),
+            ('RANGE RES', '1.5 m'),
+            ('VEL RES', '9.7 m/s'),
+            ('TRACKS', '0'),
+            ('UPTIME', '00:00:00'),
         ]
         
         for i, (name, default) in enumerate(indicators):
             row = i // 2
             col = (i % 2) * 2
             
-            label = QLabel(f"{name}:")
-            label.setStyleSheet("font-weight: bold;")
-            layout.addWidget(label, row, col)
+            name_label = QLabel(f"{name}:")
+            name_label.setStyleSheet("color: #008800;")
+            layout.addWidget(name_label, row, col)
             
-            value = QLabel(default)
-            value.setStyleSheet("font-family: monospace;")
-            layout.addWidget(value, row, col + 1)
+            value_label = QLabel(default)
+            value_label.setStyleSheet("color: #00FF00; font-weight: bold;")
+            layout.addWidget(value_label, row, col + 1)
             
-            self.labels[name] = value
+            self.labels[name] = value_label
+        
+        self.setLayout(layout)
     
-    def update_status(self, status: dict):
-        """Update status display"""
-        for key, value in status.items():
-            if key in self.labels:
-                self.labels[key].setText(str(value))
+    def update_status(self, key: str, value: str):
+        """Update a status indicator"""
+        if key in self.labels:
+            self.labels[key].setText(value)
 
 
 #===============================================================================
-# Main Tactical Display Window
+# Main TITAN Tactical Display
 #===============================================================================
 
 class TITANTacticalDisplay(QMainWindow):
     """
-    TITAN Radar Tactical Display
+    TITAN VHF Anti-Stealth Radar - Main Tactical Display
     
-    Main window integrating:
-    - PPI scope (circular display)
-    - Range-Doppler map
-    - Detection table
-    - System status
-    - Controls
+    Features:
+    - Real-time PPI (Plan Position Indicator)
+    - Range-Doppler map visualization
+    - Multi-target tracking with history
+    - Threat classification
+    - KML export for Google Earth
     """
     
-    def __init__(self, config: RadarConfig = None, hardware_mode: bool = False):
+    def __init__(self, mode: str = 'simulation'):
         super().__init__()
         
-        self.config = config or RadarConfig()
-        self.hardware_mode = hardware_mode
-        self.theme_colors = THEMES[self.config.theme]
+        self.mode = mode
+        self.tracks: Dict[int, Track] = {}
+        self.start_time = time.time()
+        self.frame_count = 0
         
-        # Track storage
-        self.tracks: Dict[int, TargetTrack] = {}
-        self.next_track_id = 1
+        # Initialize simulator (or hardware interface)
+        if mode == 'simulation':
+            self.simulator = RadarSimulator(num_targets=4)
+        else:
+            self.simulator = None
+            # TODO: Initialize hardware interface
+            # from titan_rfsoc_driver import TITANRFSoC
+            # self.hardware = TITANRFSoC()
         
-        # Simulation state
-        self.sim_time = 0
-        self.sweep_angle = 0
-        
-        # Setup UI
-        self._setup_window()
-        self._setup_menu()
-        self._setup_central_widget()
-        self._setup_status_bar()
-        self._apply_theme()
-        
-        # Start update timer
-        self.timer = QTimer()
-        self.timer.timeout.connect(self._update_loop)
-        self.timer.start(int(1000 / self.config.update_rate_hz))
-        
-        # Hardware connection (if enabled)
-        self.processor = None
-        if hardware_mode:
-            self._connect_hardware()
+        self.setup_ui()
+        self.setup_timers()
     
-    def _setup_window(self):
-        """Configure main window"""
-        self.setWindowTitle(f"TITAN v2.0 - VHF Anti-Stealth Radar Tactical Display")
+    def setup_ui(self):
+        """Setup the user interface"""
+        self.setWindowTitle(f"TITAN v2.0 - VHF Anti-Stealth Radar | Mode: {self.mode.upper()}")
         self.resize(1600, 1000)
-        self.setMinimumSize(1200, 800)
-    
-    def _setup_menu(self):
-        """Setup menu bar"""
-        menubar = self.menuBar()
         
-        # File menu
-        file_menu = menubar.addMenu("&File")
-        file_menu.addAction("Export KML...", self._export_kml)
-        file_menu.addAction("Export Track Log...", self._export_tracks)
-        file_menu.addSeparator()
-        file_menu.addAction("Exit", self.close)
-        
-        # View menu
-        view_menu = menubar.addMenu("&View")
-        view_menu.addAction("Classic Theme", lambda: self._set_theme(Theme.CLASSIC))
-        view_menu.addAction("Modern Theme", lambda: self._set_theme(Theme.MODERN))
-        view_menu.addAction("Night Theme", lambda: self._set_theme(Theme.NIGHT))
-        
-        # Radar menu
-        radar_menu = menubar.addMenu("&Radar")
-        radar_menu.addAction("Start Transmission", self._start_tx)
-        radar_menu.addAction("Stop Transmission", self._stop_tx)
-        radar_menu.addSeparator()
-        radar_menu.addAction("Calibrate", self._calibrate)
-    
-    def _setup_central_widget(self):
-        """Setup central widget with all displays"""
-        central = QWidget()
-        self.setCentralWidget(central)
-        
-        main_layout = QHBoxLayout(central)
-        
-        # Left panel: PPI + Range-Doppler
-        left_splitter = QSplitter(Qt.Vertical)
-        
-        # PPI Display
-        self.ppi = PPIWidget(self.config, self.theme_colors)
-        left_splitter.addWidget(self.ppi)
-        
-        # Range-Doppler Map
-        self.rd_map = RangeDopplerWidget(self.config)
-        left_splitter.addWidget(self.rd_map)
-        
-        left_splitter.setSizes([600, 300])
-        main_layout.addWidget(left_splitter, stretch=3)
-        
-        # Right panel: Controls + Table
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        
-        # System Status
-        self.status_widget = SystemStatusWidget()
-        right_layout.addWidget(self.status_widget)
-        
-        # Control Panel
-        control_group = QGroupBox("CONTROLS")
-        control_layout = QGridLayout()
-        control_group.setLayout(control_layout)
-        
-        # PRBS Order
-        control_layout.addWidget(QLabel("PRBS Order:"), 0, 0)
-        self.prbs_combo = QComboBox()
-        self.prbs_combo.addItems(["PRBS-10", "PRBS-11", "PRBS-15", "PRBS-18", "PRBS-20"])
-        self.prbs_combo.setCurrentText("PRBS-15")
-        control_layout.addWidget(self.prbs_combo, 0, 1)
-        
-        # TX Power
-        control_layout.addWidget(QLabel("TX Power (W):"), 1, 0)
-        self.tx_power_spin = QSpinBox()
-        self.tx_power_spin.setRange(0, 1000)
-        self.tx_power_spin.setValue(100)
-        control_layout.addWidget(self.tx_power_spin, 1, 1)
-        
-        # Detection Threshold
-        control_layout.addWidget(QLabel("CFAR Threshold:"), 2, 0)
-        self.threshold_spin = QDoubleSpinBox()
-        self.threshold_spin.setRange(6, 30)
-        self.threshold_spin.setValue(13)
-        self.threshold_spin.setSuffix(" dB")
-        control_layout.addWidget(self.threshold_spin, 2, 1)
-        
-        # Buttons
-        self.start_btn = QPushButton("▶ START")
-        self.start_btn.setStyleSheet("background-color: #006400; color: white; font-weight: bold;")
-        self.start_btn.clicked.connect(self._toggle_radar)
-        control_layout.addWidget(self.start_btn, 3, 0, 1, 2)
-        
-        self.sim_btn = QPushButton("🎯 ADD TARGET")
-        self.sim_btn.clicked.connect(self._add_simulated_target)
-        control_layout.addWidget(self.sim_btn, 4, 0, 1, 2)
-        
-        right_layout.addWidget(control_group)
-        
-        # Detection Table
-        table_group = QGroupBox("TRACK TABLE")
-        table_layout = QVBoxLayout()
-        table_group.setLayout(table_layout)
-        
-        self.track_table = DetectionTableWidget()
-        table_layout.addWidget(self.track_table)
-        
-        right_layout.addWidget(table_group, stretch=1)
-        
-        main_layout.addWidget(right_panel, stretch=1)
-    
-    def _setup_status_bar(self):
-        """Setup status bar"""
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        
-        self.time_label = QLabel()
-        self.status_bar.addPermanentWidget(self.time_label)
-        
-        self.status_bar.showMessage("SYSTEM ONLINE | MODE: SIMULATION")
-    
-    def _apply_theme(self):
-        """Apply current theme colors"""
-        colors = self.theme_colors
-        
-        self.setStyleSheet(f"""
-            QMainWindow {{
-                background-color: {colors['background']};
-            }}
-            QWidget {{
-                background-color: {colors['background']};
-                color: {colors['text']};
-            }}
-            QGroupBox {{
-                border: 1px solid {colors['foreground']};
+        # Set dark theme
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #000000;
+            }
+            QGroupBox {
+                color: #00FF00;
+                border: 1px solid #004400;
                 margin-top: 10px;
                 padding-top: 10px;
-            }}
-            QGroupBox::title {{
-                color: {colors['foreground']};
-            }}
-            QTableWidget {{
-                gridline-color: {colors['grid']};
-            }}
-            QHeaderView::section {{
-                background-color: {colors['grid']};
-                color: {colors['text']};
-            }}
-            QPushButton {{
-                border: 1px solid {colors['foreground']};
-                padding: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {colors['grid']};
-            }}
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top center;
+            }
         """)
         
-        # Configure PyQtGraph
-        pg.setConfigOption('background', colors['background'])
-        pg.setConfigOption('foreground', colors['foreground'])
-    
-    def _set_theme(self, theme: Theme):
-        """Change display theme"""
-        self.config.theme = theme
-        self.theme_colors = THEMES[theme]
-        self._apply_theme()
-    
-    def _update_loop(self):
-        """Main update loop - called by timer"""
-        self.sim_time += 1 / self.config.update_rate_hz
+        # Central widget
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
         
-        # Update sweep angle
-        self.sweep_angle = (self.sweep_angle + 2) % 360
-        self.ppi.update_sweep(self.sweep_angle)
+        # Left panel - PPI and controls
+        left_panel = QVBoxLayout()
+        
+        # PPI Display
+        ppi_group = QGroupBox("PPI TACTICAL SCOPE")
+        ppi_layout = QVBoxLayout(ppi_group)
+        self.ppi = PPIDisplay(max_range_km=100)
+        ppi_layout.addWidget(self.ppi)
+        left_panel.addWidget(ppi_group, stretch=3)
+        
+        # Status Panel
+        self.status_panel = StatusPanel()
+        left_panel.addWidget(self.status_panel, stretch=1)
+        
+        # Right panel - R-D map and tracks
+        right_panel = QVBoxLayout()
+        
+        # Tabs for different views
+        tabs = QTabWidget()
+        tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #004400;
+                background-color: #000000;
+            }
+            QTabBar::tab {
+                background-color: #002200;
+                color: #00FF00;
+                padding: 8px 20px;
+            }
+            QTabBar::tab:selected {
+                background-color: #004400;
+            }
+        """)
+        
+        # Range-Doppler tab
+        rd_widget = QWidget()
+        rd_layout = QVBoxLayout(rd_widget)
+        self.rd_display = RangeDopplerDisplay()
+        rd_layout.addWidget(self.rd_display)
+        tabs.addTab(rd_widget, "Range-Doppler")
+        
+        # Doppler Filter Bank tab
+        dfb_widget = QWidget()
+        dfb_layout = QVBoxLayout(dfb_widget)
+        self.dfb_display = pg.PlotWidget(title="DOPPLER FILTER BANK OUTPUT")
+        self.dfb_display.setLabel('bottom', 'Doppler Bin')
+        self.dfb_display.setLabel('left', 'Amplitude (dB)')
+        self.dfb_curve = self.dfb_display.plot(pen=pg.mkPen('g', width=2))
+        dfb_layout.addWidget(self.dfb_display)
+        tabs.addTab(dfb_widget, "Doppler Bank")
+        
+        # Range Profile tab
+        rp_widget = QWidget()
+        rp_layout = QVBoxLayout(rp_widget)
+        self.rp_display = pg.PlotWidget(title="RANGE PROFILE (CORRELATION OUTPUT)")
+        self.rp_display.setLabel('bottom', 'Range', units='km')
+        self.rp_display.setLabel('left', 'Amplitude (dB)')
+        self.rp_curve = self.rp_display.plot(pen=pg.mkPen('g', width=2))
+        self.rp_threshold = self.rp_display.plot(pen=pg.mkPen('r', width=1, style=Qt.DashLine))
+        rp_layout.addWidget(self.rp_display)
+        tabs.addTab(rp_widget, "Range Profile")
+        
+        right_panel.addWidget(tabs, stretch=2)
+        
+        # Track Table
+        track_group = QGroupBox("ACTIVE TRACKS")
+        track_layout = QVBoxLayout(track_group)
+        self.track_table = TrackTable()
+        track_layout.addWidget(self.track_table)
+        right_panel.addWidget(track_group, stretch=1)
+        
+        # Add panels to main layout
+        left_widget = QWidget()
+        left_widget.setLayout(left_panel)
+        right_widget = QWidget()
+        right_widget.setLayout(right_panel)
+        
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        splitter.setSizes([800, 800])
+        
+        main_layout.addWidget(splitter)
+        
+        # Status bar
+        self.statusBar = QStatusBar()
+        self.statusBar.setStyleSheet("color: #00FF00; background-color: #001100;")
+        self.setStatusBar(self.statusBar)
+        self.statusBar.showMessage("SYSTEM ONLINE | WAITING FOR TARGETS...")
+    
+    def setup_timers(self):
+        """Setup update timers"""
+        # Main update timer (20 Hz)
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self.update_display)
+        self.update_timer.start(50)  # 50 ms = 20 Hz
+        
+        # Slow update timer (1 Hz) for status
+        self.status_timer = QTimer()
+        self.status_timer.timeout.connect(self.update_status)
+        self.status_timer.start(1000)
+    
+    def update_display(self):
+        """Main display update loop"""
+        self.frame_count += 1
+        current_time = time.time() - self.start_time
         
         # Get radar data (simulation or hardware)
-        if self.hardware_mode and self.processor:
-            self._process_hardware_data()
+        if self.simulator:
+            detections = self.simulator.update()
+            rd_map = self.simulator.generate_range_doppler_map()
         else:
-            self._update_simulation()
+            # TODO: Get from hardware
+            detections = []
+            rd_map = np.zeros((256, 512))
+        
+        # Update tracks
+        for det in detections:
+            track_id = det['track_id']
+            
+            if track_id in self.tracks:
+                # Update existing track
+                self.tracks[track_id].update(
+                    det['range_m'], det['azimuth_deg'], det['velocity_mps'],
+                    det['snr_db'], current_time
+                )
+            else:
+                # Create new track
+                track = Track(
+                    track_id=track_id,
+                    range_m=det['range_m'],
+                    azimuth_deg=det['azimuth_deg'],
+                    velocity_mps=det['velocity_mps'],
+                    rcs_m2=det['rcs_m2'],
+                    snr_db=det['snr_db'],
+                )
+                # Classify threat
+                track.threat = self.classify_threat(track)
+                track.history_x.append(track.x)
+                track.history_y.append(track.y)
+                track.history_time.append(current_time)
+                self.tracks[track_id] = track
+        
+        # Update track ages
+        for track in self.tracks.values():
+            if track.history_time:
+                track.age_seconds = current_time - track.history_time[0]
         
         # Update displays
-        self.ppi.update_targets(self.tracks)
-        self.track_table.update_tracks(self.tracks)
+        track_list = list(self.tracks.values())
         
-        # Update status
-        status = {
-            "Mode": "HARDWARE" if self.hardware_mode else "SIMULATION",
-            "PRBS": self.prbs_combo.currentText(),
-            "TX Power": f"{self.tx_power_spin.value()} W",
-            "Detections": len(self.tracks),
-            "CPU Load": f"{np.random.randint(10, 30)}%",
-            "Temp": f"{np.random.randint(40, 55)}°C",
-        }
-        self.status_widget.update_status(status)
+        # PPI
+        self.ppi.update_tracks(track_list)
+        self.ppi.update_sweep((current_time * 30) % 360)
         
-        # Update time
-        self.time_label.setText(datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"))
+        # Range-Doppler
+        det_points = [(t.range_m, t.velocity_mps) for t in track_list]
+        self.rd_display.update_map(rd_map, det_points)
         
-        # Update Range-Doppler map (simulated)
-        self._update_rd_map()
+        # Range profile (sum across Doppler)
+        range_profile = np.max(rd_map, axis=0)
+        range_axis = np.linspace(0, 100, len(range_profile))
+        range_db = 10 * np.log10(range_profile + 1e-10)
+        self.rp_curve.setData(range_axis, range_db)
+        self.rp_threshold.setData(range_axis, np.ones_like(range_axis) * 15)
+        
+        # Doppler profile (sum across range)
+        doppler_profile = np.max(rd_map, axis=1)
+        doppler_db = 10 * np.log10(doppler_profile + 1e-10)
+        self.dfb_curve.setData(doppler_db)
+        
+        # Track table
+        self.track_table.update_tracks(track_list)
+        
+        # Status bar
+        fps = self.frame_count / max(current_time, 0.001)
+        self.statusBar.showMessage(
+            f"TRACKS: {len(track_list)} | "
+            f"TIME: {current_time:.1f}s | "
+            f"FPS: {fps:.1f} | "
+            f"MODE: {'SIM' if self.simulator else 'HW'}"
+        )
     
-    def _update_simulation(self):
-        """Update simulation targets"""
-        current_time = time.time()
+    def update_status(self):
+        """Update status panel (1 Hz)"""
+        elapsed = time.time() - self.start_time
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
         
-        for track_id, track in list(self.tracks.items()):
-            # Move target
-            if hasattr(track, 'sim_velocity') and hasattr(track, 'sim_heading'):
-                vx = track.sim_velocity * np.cos(np.radians(track.sim_heading))
-                vy = track.sim_velocity * np.sin(np.radians(track.sim_heading))
-                
-                new_x = track.x + vx / self.config.update_rate_hz
-                new_y = track.y + vy / self.config.update_rate_hz
-                
-                # Add noise
-                new_x += np.random.normal(0, 50)
-                new_y += np.random.normal(0, 50)
-                
-                track.update_position(new_x, new_y, self.config.trail_length)
-                track.velocity_mps = track.sim_velocity
-                track.heading_deg = track.sim_heading
-            
-            # Update age
-            track.age_seconds = current_time - track.last_update
-            
-            # Remove old tracks
-            if track.age_seconds > 30:
-                del self.tracks[track_id]
+        self.status_panel.update_status('UPTIME', f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+        self.status_panel.update_status('TRACKS', str(len(self.tracks)))
+        self.status_panel.update_status('MODE', self.mode.upper())
     
-    def _update_rd_map(self):
-        """Update Range-Doppler map display"""
-        # Generate simulated R-D map
-        rd_map = np.random.randn(self.config.doppler_bins, self.config.range_bins) * 0.1
+    def classify_threat(self, track: Track) -> ThreatLevel:
+        """Classify target threat level based on characteristics"""
+        # Low RCS + high speed = potential stealth
+        if track.rcs_m2 < 1.0 and abs(track.velocity_mps) > 200:
+            return ThreatLevel.STEALTH
         
-        # Add targets as bright spots
+        # Very low RCS
+        if track.rcs_m2 < 0.1:
+            return ThreatLevel.STEALTH
+        
+        # High speed approaching
+        if track.velocity_mps < -300:  # Negative = approaching
+            return ThreatLevel.HOSTILE
+        
+        # Large slow target
+        if track.rcs_m2 > 50 and abs(track.velocity_mps) < 150:
+            return ThreatLevel.NEUTRAL
+        
+        return ThreatLevel.UNKNOWN
+    
+    def export_kml(self, filename: str, origin_lat: float = 45.815, 
+                   origin_lon: float = 15.982):
+        """Export current tracks to KML for Google Earth"""
+        kml = ['<?xml version="1.0" encoding="UTF-8"?>']
+        kml.append('<kml xmlns="http://www.opengis.net/kml/2.2">')
+        kml.append('<Document>')
+        kml.append(f'<name>TITAN Radar Tracks - {datetime.now().isoformat()}</name>')
+        
         for track in self.tracks.values():
-            range_bin = int(track.range_m / self.config.max_range_m * self.config.range_bins)
-            doppler_bin = self.config.doppler_bins // 2 + int(track.velocity_mps / 10)
+            # Convert local X,Y to lat/lon (approximate)
+            lat = origin_lat + (track.y / 1000) / 111
+            lon = origin_lon + (track.x / 1000) / (111 * np.cos(np.radians(origin_lat)))
             
-            if 0 <= range_bin < self.config.range_bins and 0 <= doppler_bin < self.config.doppler_bins:
-                # Create target blob
-                for dr in range(-3, 4):
-                    for dd in range(-3, 4):
-                        r = range_bin + dr
-                        d = doppler_bin + dd
-                        if 0 <= r < self.config.range_bins and 0 <= d < self.config.doppler_bins:
-                            intensity = track.snr_db / 30 * np.exp(-(dr**2 + dd**2) / 4)
-                            rd_map[d, r] += intensity
+            kml.append(f'''
+            <Placemark>
+                <name>Track {track.track_id} - {track.threat.value}</name>
+                <description>
+                    Range: {track.range_m/1000:.1f} km
+                    Velocity: {track.velocity_mps:.0f} m/s
+                    RCS: {track.rcs_m2:.2f} m²
+                </description>
+                <Point>
+                    <coordinates>{lon},{lat},5000</coordinates>
+                </Point>
+            </Placemark>
+            ''')
         
-        self.rd_map.update_display(rd_map)
-    
-    def _add_simulated_target(self):
-        """Add a simulated target for testing"""
-        track = TargetTrack(track_id=self.next_track_id)
-        self.next_track_id += 1
-        
-        # Random initial position (50-100 km range)
-        range_m = np.random.uniform(50000, 100000)
-        azimuth_rad = np.random.uniform(0, 2 * np.pi)
-        
-        x = range_m * np.cos(azimuth_rad)
-        y = range_m * np.sin(azimuth_rad)
-        
-        track.update_position(x, y)
-        
-        # Simulation parameters
-        track.sim_velocity = np.random.uniform(100, 400)  # m/s
-        track.sim_heading = np.random.uniform(0, 360)
-        
-        # Detection parameters
-        track.snr_db = np.random.uniform(15, 35)
-        track.rcs_m2 = np.random.uniform(1, 20)
-        track.classification = np.random.choice(["AIRCRAFT", "UAV", "HELICOPTER", "UNKNOWN"])
-        track.threat_level = np.random.choice(["LOW", "MEDIUM", "HIGH"])
-        
-        self.tracks[track.track_id] = track
-        
-        self.status_bar.showMessage(
-            f"TARGET ADDED: T{track.track_id:03d} at {track.range_m/1000:.1f} km, {track.azimuth_deg:.1f}°"
-        )
-    
-    def _toggle_radar(self):
-        """Toggle radar operation"""
-        if self.start_btn.text() == "▶ START":
-            self.start_btn.setText("■ STOP")
-            self.start_btn.setStyleSheet("background-color: #8B0000; color: white; font-weight: bold;")
-            self.status_bar.showMessage("RADAR ACTIVE | TRANSMITTING")
-        else:
-            self.start_btn.setText("▶ START")
-            self.start_btn.setStyleSheet("background-color: #006400; color: white; font-weight: bold;")
-            self.status_bar.showMessage("RADAR STANDBY")
-    
-    def _connect_hardware(self):
-        """Connect to TITAN RFSoC hardware"""
-        try:
-            from titan_signal_processor import TITANProcessor, TITANConfig
-            
-            config = TITANConfig(
-                prbs_order=15,
-                num_range_bins=self.config.range_bins,
-                num_doppler_bins=self.config.doppler_bins,
-            )
-            self.processor = TITANProcessor(config)
-            self.status_bar.showMessage("HARDWARE CONNECTED | TITAN ONLINE")
-            
-        except ImportError as e:
-            QMessageBox.warning(
-                self, "Hardware Error",
-                f"Could not connect to TITAN hardware:\n{e}\n\nRunning in simulation mode."
-            )
-            self.hardware_mode = False
-    
-    def _process_hardware_data(self):
-        """Process data from TITAN hardware"""
-        # TODO: Integrate with titan_rfsoc_driver
-        pass
-    
-    def _start_tx(self):
-        """Start radar transmission"""
-        self.status_bar.showMessage("TRANSMISSION STARTED")
-    
-    def _stop_tx(self):
-        """Stop radar transmission"""
-        self.status_bar.showMessage("TRANSMISSION STOPPED")
-    
-    def _calibrate(self):
-        """Run calibration routine"""
-        QMessageBox.information(self, "Calibration", "Calibration routine not implemented.")
-    
-    def _export_kml(self):
-        """Export tracks to Google Earth KML format"""
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Export KML", "", "KML Files (*.kml)"
-        )
-        
-        if filename:
-            self._write_kml(filename)
-            self.status_bar.showMessage(f"Exported to {filename}")
-    
-    def _write_kml(self, filename: str):
-        """Write tracks to KML file"""
-        # Reference location (radar position) - would be configurable
-        ref_lat = 45.8150  # Zagreb
-        ref_lon = 15.9819
-        
-        kml = '<?xml version="1.0" encoding="UTF-8"?>\n'
-        kml += '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
-        kml += '<Document>\n'
-        kml += f'  <name>TITAN Radar Tracks - {datetime.now().isoformat()}</name>\n'
-        
-        for track_id, track in self.tracks.items():
-            # Convert local coordinates to lat/lon (simplified)
-            # 1 degree ≈ 111 km
-            lat = ref_lat + track.y / 111000
-            lon = ref_lon + track.x / (111000 * np.cos(np.radians(ref_lat)))
-            
-            kml += f'''
-  <Placemark>
-    <name>T{track_id:03d} - {track.classification}</name>
-    <description>
-      Range: {track.range_m/1000:.1f} km
-      Velocity: {track.velocity_mps:.0f} m/s
-      SNR: {track.snr_db:.1f} dB
-    </description>
-    <Point>
-      <coordinates>{lon},{lat},1000</coordinates>
-    </Point>
-  </Placemark>
-'''
-        
-        kml += '</Document>\n</kml>'
+        kml.append('</Document></kml>')
         
         with open(filename, 'w') as f:
-            f.write(kml)
-    
-    def _export_tracks(self):
-        """Export track log to CSV"""
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Export Tracks", "", "CSV Files (*.csv)"
-        )
+            f.write('\n'.join(kml))
         
-        if filename:
-            with open(filename, 'w') as f:
-                f.write("track_id,range_m,azimuth_deg,velocity_mps,snr_db,rcs_m2,classification,threat\n")
-                for track_id, track in self.tracks.items():
-                    f.write(f"{track_id},{track.range_m:.1f},{track.azimuth_deg:.1f},"
-                           f"{track.velocity_mps:.1f},{track.snr_db:.1f},{track.rcs_m2:.1f},"
-                           f"{track.classification},{track.threat_level}\n")
-            
-            self.status_bar.showMessage(f"Exported to {filename}")
+        print(f"KML exported to: {filename}")
 
 
 #===============================================================================
@@ -891,43 +893,41 @@ class TITANTacticalDisplay(QMainWindow):
 #===============================================================================
 
 def main():
-    """Main entry point"""
     import argparse
     
-    parser = argparse.ArgumentParser(description="TITAN Tactical Display")
-    parser.add_argument("--hardware", action="store_true", help="Connect to RFSoC hardware")
-    parser.add_argument("--theme", choices=["classic", "modern", "night"], default="classic",
-                       help="Display theme")
-    parser.add_argument("--range", type=float, default=150, help="Max range in km")
+    parser = argparse.ArgumentParser(description='TITAN VHF Radar Tactical Display')
+    parser.add_argument('--mode', choices=['simulation', 'hardware'], 
+                       default='simulation', help='Operating mode')
+    parser.add_argument('--kml', type=str, help='Enable KML export to file')
+    parser.add_argument('--fullscreen', action='store_true', help='Start in fullscreen')
     
     args = parser.parse_args()
     
-    # Configure
-    config = RadarConfig(
-        max_range_m=args.range * 1000,
-        theme=Theme(args.theme),
-    )
-    
-    # Start application
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')
     
-    # Set dark palette
+    # Dark palette
     palette = QPalette()
-    palette.setColor(QPalette.Window, QColor(10, 10, 10))
+    palette.setColor(QPalette.Window, QColor(0, 0, 0))
     palette.setColor(QPalette.WindowText, QColor(0, 255, 0))
+    palette.setColor(QPalette.Base, QColor(0, 17, 0))
+    palette.setColor(QPalette.Text, QColor(0, 255, 0))
     app.setPalette(palette)
     
-    # Create and show main window
-    window = TITANTacticalDisplay(config, hardware_mode=args.hardware)
-    window.show()
+    display = TITANTacticalDisplay(mode=args.mode)
     
-    # Add initial simulated targets
-    for _ in range(3):
-        window._add_simulated_target()
+    if args.fullscreen:
+        display.showFullScreen()
+    else:
+        display.show()
+    
+    # KML export timer (if enabled)
+    if args.kml:
+        kml_timer = QTimer()
+        kml_timer.timeout.connect(lambda: display.export_kml(args.kml))
+        kml_timer.start(5000)  # Export every 5 seconds
     
     sys.exit(app.exec_())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
